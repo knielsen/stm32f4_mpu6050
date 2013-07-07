@@ -1,0 +1,1 @@
+#define MPU6050_REG_WHOAMI 117

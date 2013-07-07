@@ -1,0 +1,5 @@
+*~
+*.o
+i2c-test.bin
+i2c-test.elf
+i2c-test.hex
