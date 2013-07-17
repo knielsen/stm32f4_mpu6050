@@ -245,8 +245,8 @@ setup_i2c_for_mpu6050()
 }
 
 
-static uint8_t
-read_mpu6050_reg(uint8_t reg)
+static void
+read_mpu6050_reg_multi(uint8_t reg, uint8_t *buf, uint32_t len)
 {
   uint8_t val;
 
@@ -270,13 +270,30 @@ read_mpu6050_reg(uint8_t reg)
   while (!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_RECEIVER_MODE_SELECTED))
     ;
 
-  I2C_AcknowledgeConfig(I2C1, DISABLE);
+  if (len > 1)
+    I2C_AcknowledgeConfig(I2C1, ENABLE);
+  while (len > 0)
+  {
+    if (len == 1)
+      I2C_AcknowledgeConfig(I2C1, DISABLE);
 
-  while (!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_RECEIVED));
-  val = I2C_ReceiveData(I2C1);
+    while (!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_RECEIVED))
+      ;
+    val = I2C_ReceiveData(I2C1);
+    *buf++ = val;
+    --len;
+  }
 
   I2C_GenerateSTOP(I2C1, ENABLE);
+}
 
+
+static uint8_t
+read_mpu6050_reg(uint8_t reg)
+{
+  uint8_t val;
+
+  read_mpu6050_reg_multi(reg, &val, 1);
   return val;
 }
 
@@ -386,49 +403,36 @@ int main(void)
   while (1)
   {
     int16_t val;
-    uint8_t high, low;
+    uint8_t buf[14];
 
     serial_puts(USART2, "\r\nRead sensors ...\r\n");
+    read_mpu6050_reg_multi(MPU6050_REG_ACCEL_XOUT_H, buf, 14);
 
-    high = read_mpu6050_reg(MPU6050_REG_TEMP_OUT_H);
-    low = read_mpu6050_reg(MPU6050_REG_TEMP_OUT_L);
-    val = mpu6050_regs_to_signed(high, low);
+    val = mpu6050_regs_to_signed(buf[6], buf[7]);
     serial_puts(USART2, "  Temp=");
     println_float(USART2, (float)val/340.0f+36.53f, 2, 3);
 
-    high = read_mpu6050_reg(MPU6050_REG_ACCEL_XOUT_H);
-    low = read_mpu6050_reg(MPU6050_REG_ACCEL_XOUT_L);
-    val = mpu6050_regs_to_signed(high, low);
+    val = mpu6050_regs_to_signed(buf[0], buf[1]);
     serial_puts(USART2, "  Accel_x=");
     println_float(USART2, (float)val/(float)2048, 2, 3);
 
-    high = read_mpu6050_reg(MPU6050_REG_ACCEL_YOUT_H);
-    low = read_mpu6050_reg(MPU6050_REG_ACCEL_YOUT_L);
-    val = mpu6050_regs_to_signed(high, low);
+    val = mpu6050_regs_to_signed(buf[2], buf[3]);
     serial_puts(USART2, "  Accel_y=");
     println_float(USART2, (float)val/(float)2048, 2, 3);
 
-    high = read_mpu6050_reg(MPU6050_REG_ACCEL_ZOUT_H);
-    low = read_mpu6050_reg(MPU6050_REG_ACCEL_ZOUT_L);
-    val = mpu6050_regs_to_signed(high, low);
+    val = mpu6050_regs_to_signed(buf[4], buf[5]);
     serial_puts(USART2, "  Accel_z=");
     println_float(USART2, (float)val/(float)2048, 2, 3);
 
-    high = read_mpu6050_reg(MPU6050_REG_GYRO_XOUT_H);
-    low = read_mpu6050_reg(MPU6050_REG_GYRO_XOUT_L);
-    val = mpu6050_regs_to_signed(high, low);
+    val = mpu6050_regs_to_signed(buf[8], buf[9]);
     serial_puts(USART2, "  Gyro_x=");
     println_float(USART2, (float)val/(float)2048, 2, 3);
 
-    high = read_mpu6050_reg(MPU6050_REG_GYRO_YOUT_H);
-    low = read_mpu6050_reg(MPU6050_REG_GYRO_YOUT_L);
-    val = mpu6050_regs_to_signed(high, low);
+    val = mpu6050_regs_to_signed(buf[10], buf[11]);
     serial_puts(USART2, "  Gyro_y=");
     println_float(USART2, (float)val/(float)2048, 2, 3);
 
-    high = read_mpu6050_reg(MPU6050_REG_GYRO_ZOUT_H);
-    low = read_mpu6050_reg(MPU6050_REG_GYRO_ZOUT_L);
-    val = mpu6050_regs_to_signed(high, low);
+    val = mpu6050_regs_to_signed(buf[12], buf[13]);
     serial_puts(USART2, "  Gyro_z=");
     println_float(USART2, (float)val/(float)2048, 2, 3);
 
