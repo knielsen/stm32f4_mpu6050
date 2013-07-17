@@ -219,11 +219,11 @@ setup_i2c_for_mpu6050()
   GPIO_InitTypeDef GPIO_InitStruct;
   I2C_InitTypeDef I2C_InitStruct;
 
-  /* Use I2C1, with SCL on PB8 and SDA on PB9. */
+  /* Use I2C1, with SCL on PB8 and SDA on PB7. */
   RCC_APB1PeriphClockCmd(RCC_APB1Periph_I2C1, ENABLE);
   RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOB, ENABLE);
 
-  GPIO_InitStruct.GPIO_Pin = GPIO_Pin_8 | GPIO_Pin_9;
+  GPIO_InitStruct.GPIO_Pin = GPIO_Pin_8 | GPIO_Pin_7;
   GPIO_InitStruct.GPIO_Mode = GPIO_Mode_AF;
   GPIO_InitStruct.GPIO_Speed = GPIO_Speed_50MHz;
   GPIO_InitStruct.GPIO_OType = GPIO_OType_OD;
@@ -231,7 +231,7 @@ setup_i2c_for_mpu6050()
   GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   GPIO_PinAFConfig(GPIOB, GPIO_PinSource8, GPIO_AF_I2C1);
-  GPIO_PinAFConfig(GPIOB, GPIO_PinSource9, GPIO_AF_I2C1);
+  GPIO_PinAFConfig(GPIOB, GPIO_PinSource7, GPIO_AF_I2C1);
 
   I2C_InitStruct.I2C_ClockSpeed = 400000;
   I2C_InitStruct.I2C_Mode = I2C_Mode_I2C;
