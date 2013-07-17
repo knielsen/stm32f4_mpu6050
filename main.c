@@ -9,15 +9,11 @@
  * and science. You may use it as such.
  */
 
-/* stm32f4_discovery.h is located in Utilities/STM32F4-Discovery
- * and defines the GPIO Pins where the leds are connected.
- * Including this header also includes stm32f4xx.h and
- * stm32f4xx_conf.h, which includes stm32f4xx_gpio.h
- */
+#include <math.h>
+
 #include <stm32f4_discovery.h>
 
 #include "mpu6050.h"
-
 
 /*
   The 7-bit address of the I2C slave.
@@ -97,6 +93,123 @@ serial_output_hexbyte(USART_TypeDef* USARTx, uint8_t byte)
 {
   serial_output_hexdig(USARTx, byte >> 4);
   serial_output_hexdig(USARTx, byte & 0xf);
+}
+
+
+__attribute__ ((unused))
+static void
+println_uint32(USART_TypeDef* usart, uint32_t val)
+{
+  char buf[13];
+  char *p = buf;
+  uint32_t l, d;
+
+  l = 1000000000UL;
+  while (l > val && l > 1)
+    l /= 10;
+
+  do
+  {
+    d = val / l;
+    *p++ = '0' + d;
+    val -= d*l;
+    l /= 10;
+  } while (l > 0);
+
+  *p++ = '\r';
+  *p++ = '\n';
+  *p = '\0';
+  serial_puts(usart, buf);
+}
+
+
+__attribute__ ((unused))
+static void
+println_int32(USART_TypeDef* usart, int32_t val)
+{
+  if (val < 0)
+  {
+    serial_putchar(usart, '-');
+    println_uint32(usart, (uint32_t)0 - (uint32_t)val);
+  }
+  else
+    println_uint32(usart, val);
+}
+
+
+static void
+float_to_str(char *buf, float f, uint32_t dig_before, uint32_t dig_after)
+{
+  float a;
+  uint32_t d;
+  uint8_t leading_zero;
+
+  if (f == 0.0f)
+  {
+    buf[0] = '0';
+    buf[1] = '\0';
+    return;
+  }
+  if (f < 0)
+  {
+    *buf++ = '-';
+    f = -f;
+  }
+  a =  powf(10.0f, (float)dig_before);
+  if (f >= a)
+  {
+    buf[0] = '#';
+    buf[1] = '\0';
+    return;
+  }
+  leading_zero = 1;
+  while (dig_before)
+  {
+    a /= 10.0f;
+    d = (uint32_t)(f / a);
+    if (leading_zero && d == 0 && a >= 10.0f)
+      *buf++ = ' ';
+    else
+    {
+      leading_zero = 0;
+      *buf++ = '0' + d;
+      f -= d*a;
+    }
+    --dig_before;
+  }
+  if (!dig_after)
+  {
+    *buf++ = '\0';
+    return;
+  }
+  *buf++ = '.';
+  do
+  {
+    f *= 10.0f;
+    d = (uint32_t)f;
+    *buf++ = '0' + d;
+    f -= (float)d;
+    --dig_after;
+  } while (dig_after);
+  *buf++ = '\0';
+}
+
+
+__attribute__ ((unused))
+static void
+println_float(USART_TypeDef* usart, float f,
+              uint32_t dig_before, uint32_t dig_after)
+{
+  char buf[21];
+  char *p = buf;
+
+  float_to_str(p, f, dig_before, dig_after);
+  while (*p)
+    ++p;
+  *p++ = '\r';
+  *p++ = '\n';
+  *p = '\0';
+  serial_puts(usart, buf);
 }
 
 
@@ -243,6 +356,14 @@ setup_mpu6050(void)
 }
 
 
+static int16_t
+mpu6050_regs_to_signed(uint8_t high, uint8_t low)
+{
+  uint16_t v = ((uint16_t)high << 8) | low;
+  return (int16_t)v;
+}
+
+
 int main(void)
 {
   uint8_t res;
@@ -264,41 +385,54 @@ int main(void)
 
   while (1)
   {
-    int16_t temp_data;
+    int16_t val;
     uint8_t high, low;
 
-    serial_puts(USART2, "\r\nRead sensors ...");
-    temp_data = (int16_t)(
-      ((uint16_t)read_mpu6050_reg(MPU6050_REG_TEMP_OUT_H) << 8) |
-      read_mpu6050_reg(MPU6050_REG_TEMP_OUT_L));
-    serial_puts(USART2, " temp_h=0x");
-    serial_output_hexbyte(USART2, (temp_data >> 8));
-    serial_puts(USART2, " temp_l=0x");
-    serial_output_hexbyte(USART2, (temp_data & 0xff));
-    serial_puts(USART2, "\r\n");
+    serial_puts(USART2, "\r\nRead sensors ...\r\n");
+
+    high = read_mpu6050_reg(MPU6050_REG_TEMP_OUT_H);
+    low = read_mpu6050_reg(MPU6050_REG_TEMP_OUT_L);
+    val = mpu6050_regs_to_signed(high, low);
+    serial_puts(USART2, "  Temp=");
+    println_float(USART2, (float)val/340.0f+36.53f, 2, 3);
 
     high = read_mpu6050_reg(MPU6050_REG_ACCEL_XOUT_H);
     low = read_mpu6050_reg(MPU6050_REG_ACCEL_XOUT_L);
-    serial_puts(USART2, "Accel_x=0x");
-    serial_output_hexbyte(USART2, high);
-    serial_output_hexbyte(USART2, low);
-    serial_puts(USART2, "\r\n");
+    val = mpu6050_regs_to_signed(high, low);
+    serial_puts(USART2, "  Accel_x=");
+    println_float(USART2, (float)val/(float)2048, 2, 3);
 
     high = read_mpu6050_reg(MPU6050_REG_ACCEL_YOUT_H);
     low = read_mpu6050_reg(MPU6050_REG_ACCEL_YOUT_L);
-    serial_puts(USART2, "Accel_y=0x");
-    serial_output_hexbyte(USART2, high);
-    serial_output_hexbyte(USART2, low);
-    serial_puts(USART2, "\r\n");
+    val = mpu6050_regs_to_signed(high, low);
+    serial_puts(USART2, "  Accel_y=");
+    println_float(USART2, (float)val/(float)2048, 2, 3);
 
     high = read_mpu6050_reg(MPU6050_REG_ACCEL_ZOUT_H);
     low = read_mpu6050_reg(MPU6050_REG_ACCEL_ZOUT_L);
-    serial_puts(USART2, "Accel_z=0x");
-    serial_output_hexbyte(USART2, high);
-    serial_output_hexbyte(USART2, low);
-    serial_puts(USART2, "\r\n");
+    val = mpu6050_regs_to_signed(high, low);
+    serial_puts(USART2, "  Accel_z=");
+    println_float(USART2, (float)val/(float)2048, 2, 3);
 
-    delay(30000000);
+    high = read_mpu6050_reg(MPU6050_REG_GYRO_XOUT_H);
+    low = read_mpu6050_reg(MPU6050_REG_GYRO_XOUT_L);
+    val = mpu6050_regs_to_signed(high, low);
+    serial_puts(USART2, "  Gyro_x=");
+    println_float(USART2, (float)val/(float)2048, 2, 3);
+
+    high = read_mpu6050_reg(MPU6050_REG_GYRO_YOUT_H);
+    low = read_mpu6050_reg(MPU6050_REG_GYRO_YOUT_L);
+    val = mpu6050_regs_to_signed(high, low);
+    serial_puts(USART2, "  Gyro_y=");
+    println_float(USART2, (float)val/(float)2048, 2, 3);
+
+    high = read_mpu6050_reg(MPU6050_REG_GYRO_ZOUT_H);
+    low = read_mpu6050_reg(MPU6050_REG_GYRO_ZOUT_L);
+    val = mpu6050_regs_to_signed(high, low);
+    serial_puts(USART2, "  Gyro_z=");
+    println_float(USART2, (float)val/(float)2048, 2, 3);
+
+    delay(10000000);
   }
 
   return 0;
