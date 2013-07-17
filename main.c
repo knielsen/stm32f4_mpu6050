@@ -120,7 +120,7 @@ setup_i2c_for_mpu6050()
   GPIO_PinAFConfig(GPIOB, GPIO_PinSource8, GPIO_AF_I2C1);
   GPIO_PinAFConfig(GPIOB, GPIO_PinSource9, GPIO_AF_I2C1);
 
-  I2C_InitStruct.I2C_ClockSpeed = 100000;
+  I2C_InitStruct.I2C_ClockSpeed = 400000;
   I2C_InitStruct.I2C_Mode = I2C_Mode_I2C;
   I2C_InitStruct.I2C_DutyCycle = I2C_DutyCycle_2;
   I2C_InitStruct.I2C_OwnAddress1 = 0x00;
@@ -168,24 +168,137 @@ read_mpu6050_reg(uint8_t reg)
 }
 
 
+static void
+write_mpu6050_reg(uint8_t reg, uint8_t val)
+{
+  I2C_GenerateSTART(I2C1, ENABLE);
+  while (!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_MODE_SELECT))
+    ;
+
+  I2C_Send7bitAddress(I2C1, MPU6050_I2C_ADDR << 1, I2C_Direction_Transmitter);
+  while (!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_TRANSMITTER_MODE_SELECTED))
+    ;
+
+  I2C_SendData(I2C1, reg);
+  while (!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_TRANSMITTED))
+    ;
+
+  I2C_SendData(I2C1, val);
+  while (!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_TRANSMITTED))
+    ;
+
+  I2C_GenerateSTOP(I2C1, ENABLE);
+}
+
+
+static void
+setup_mpu6050(void)
+{
+  for (;;)
+  {
+    uint8_t res;
+
+    /*
+      First take it out of sleep mode (writes seem to not stick until we take it
+      out of sleep mode). Then issue a reset to get a well-defined starting state
+      (and go out of sleep mode again).
+    */
+    write_mpu6050_reg(MPU6050_REG_PWR_MGMT_1, 0x02);
+    delay(300000);
+    res = read_mpu6050_reg(MPU6050_REG_PWR_MGMT_1);
+    if (res != 0x02)
+      continue;
+    write_mpu6050_reg(MPU6050_REG_PWR_MGMT_1, 0x82);
+    delay(300000);
+    res = read_mpu6050_reg(MPU6050_REG_PWR_MGMT_1);
+    if (res != 0x40)
+      continue;
+    write_mpu6050_reg(MPU6050_REG_PWR_MGMT_1, 0x02);
+    delay(300000);
+    res = read_mpu6050_reg(MPU6050_REG_PWR_MGMT_1);
+    if (res != 0x02)
+      continue;
+
+    /* Disable digital low-pass filter (DLPF) */
+    write_mpu6050_reg(MPU6050_REG_CONFIG, 0);
+    /* 1000 Hz sample rate. */
+    write_mpu6050_reg(MPU6050_REG_SMPRT_DIV, 7);
+    /* Lowest resolution, +-2000 degrees / second and +-16g. */
+    write_mpu6050_reg(MPU6050_REG_GYRO_CONFIG, 3 << 3);
+    write_mpu6050_reg(MPU6050_REG_ACCEL_CONFIG, 3 << 3);
+    /* Disable the Fifo (write 0xf8 to enable temp+gyros_accel). */
+    write_mpu6050_reg(MPU6050_REG_FIFO_EN, 0x00);
+    /*
+      Interrupt. Active high, push-pull, hold until cleared, cleared only on
+      read of status.
+    */
+    write_mpu6050_reg(MPU6050_REG_INT_PIN_CFG, 0x20);
+    /* Enable FIFO overflow and data ready interrupts. */
+    write_mpu6050_reg(MPU6050_REG_INT_ENABLE, 0x11);
+    /* Disable the FIFO and external I2C master mode. */
+    write_mpu6050_reg(MPU6050_REG_USER_CTRL, 0x00);
+
+    break;
+  }
+}
+
+
 int main(void)
 {
+  uint8_t res;
+
   delay(2000000);
   setup_serial();
   setup_i2c_for_mpu6050();
   delay(2000000);
+  setup_mpu6050();
 
   serial_puts(USART2, "Hello world, ready to blink!\r\n");
+
+  res = read_mpu6050_reg(MPU6050_REG_WHOAMI);
+  serial_puts(USART2, "\r\nMPU6050: whoami=0x");
+  serial_output_hexbyte(USART2, res);
+  res = read_mpu6050_reg(MPU6050_REG_PWR_MGMT_1);
+  serial_puts(USART2, "\r\nMPU6050: pwr_mgmt_1=0x");
+  serial_output_hexbyte(USART2, res);
+
   while (1)
   {
-    uint8_t res;
+    int16_t temp_data;
+    uint8_t high, low;
 
-    serial_puts(USART2, "\r\nstarting MPU 6050 read...\r\n");
-    res = read_mpu6050_reg(MPU6050_REG_WHOAMI);
-    serial_puts(USART2, "\r\nMPU6050: 0x");
-    serial_output_hexbyte(USART2, res);
+    serial_puts(USART2, "\r\nRead sensors ...");
+    temp_data = (int16_t)(
+      ((uint16_t)read_mpu6050_reg(MPU6050_REG_TEMP_OUT_H) << 8) |
+      read_mpu6050_reg(MPU6050_REG_TEMP_OUT_L));
+    serial_puts(USART2, " temp_h=0x");
+    serial_output_hexbyte(USART2, (temp_data >> 8));
+    serial_puts(USART2, " temp_l=0x");
+    serial_output_hexbyte(USART2, (temp_data & 0xff));
     serial_puts(USART2, "\r\n");
-    delay(10000000);
+
+    high = read_mpu6050_reg(MPU6050_REG_ACCEL_XOUT_H);
+    low = read_mpu6050_reg(MPU6050_REG_ACCEL_XOUT_L);
+    serial_puts(USART2, "Accel_x=0x");
+    serial_output_hexbyte(USART2, high);
+    serial_output_hexbyte(USART2, low);
+    serial_puts(USART2, "\r\n");
+
+    high = read_mpu6050_reg(MPU6050_REG_ACCEL_YOUT_H);
+    low = read_mpu6050_reg(MPU6050_REG_ACCEL_YOUT_L);
+    serial_puts(USART2, "Accel_y=0x");
+    serial_output_hexbyte(USART2, high);
+    serial_output_hexbyte(USART2, low);
+    serial_puts(USART2, "\r\n");
+
+    high = read_mpu6050_reg(MPU6050_REG_ACCEL_ZOUT_H);
+    low = read_mpu6050_reg(MPU6050_REG_ACCEL_ZOUT_L);
+    serial_puts(USART2, "Accel_z=0x");
+    serial_output_hexbyte(USART2, high);
+    serial_output_hexbyte(USART2, low);
+    serial_puts(USART2, "\r\n");
+
+    delay(30000000);
   }
 
   return 0;
