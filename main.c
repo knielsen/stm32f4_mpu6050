@@ -350,26 +350,6 @@ async_read_event_handler(void)
   uint32_t events = I2C_GetLastEvent(I2C1);
   uint32_t stage = i2c_async_stage;
 
-  if ((events & I2C_EVENT_MASTER_MODE_SELECT) == I2C_EVENT_MASTER_MODE_SELECT)
-  {
-    /*
-      The interrupt is cleared by reading CR1 and writing address to DR.
-      The GetLastEvent() above read CR1, and the Send7bitAddress() writes the DR.
-    */
-    if (stage == 1)
-      I2C_Send7bitAddress(I2C1, MPU6050_I2C_ADDR << 1, I2C_Direction_Transmitter);
-    else
-    {
-      I2C_Send7bitAddress(I2C1, MPU6050_I2C_ADDR << 1, I2C_Direction_Receiver);
-      if (i2c_async_len > 1)
-        I2C_AcknowledgeConfig(I2C1, ENABLE);
-      else
-        I2C_AcknowledgeConfig(I2C1, DISABLE);
-    }
-
-    return;
-  }
-
   if (events & I2C_SR1_ADDR)
   {
     /*
@@ -388,12 +368,24 @@ async_read_event_handler(void)
   if (stage == 1 && (events & I2C_SR1_BTF))
   {
     i2c_async_stage = 2;
-    /*
-      Clear old transmit status, to avoid spurious interrupts until the start
-      condition has been generated.
-    */
-    // ToDo doesn't seem to work ... :-( I2C1->SR1 &= ~(I2C_SR1_BTF | I2C_SR1_TXE);
     I2C_GenerateSTART(I2C1, ENABLE);
+    /*
+      There does not seem to be a way to wait for the start condition using
+      an interrupt. The problem is that until the start condition triggers, we
+      are still in transmit mode with BTF asserted, so we get spurious
+      interrupts.
+
+      So we might as well just busy-wait here, better than triggering spurious
+      interrupts until the start condition occurs. Testing show that we only
+      take a couple of loops (like 5) anyway.
+    */
+    while (!(I2C_GetLastEvent(I2C1) & I2C_SR1_SB))
+      ;
+    I2C_Send7bitAddress(I2C1, MPU6050_I2C_ADDR << 1, I2C_Direction_Receiver);
+    if (i2c_async_len > 1)
+      I2C_AcknowledgeConfig(I2C1, ENABLE);
+    else
+      I2C_AcknowledgeConfig(I2C1, DISABLE);
     return;
   }
 
@@ -412,21 +404,17 @@ async_read_event_handler(void)
     return;
   }
 
-  if (stage == 2 && (events & I2C_SR1_TXE))
+  /* Attempt to track spurious interrupt. */
+  if (!(events & ~(((uint32_t)I2C_SR2_BUSY << 16)|((uint32_t)I2C_SR2_MSL << 16))))
   {
     /*
-      After transmitting the register ID, we are still in transmit mode, with
-      BTF asserted until the start condition occurs.
-      Unfortunately, this means that we will get spurious BTF/TxE interrupts
-      until the stop condition occurs. Furtunately, this seems to happen
-      almost immediately (no reason it shouldn't).
+      We seem to get this sporadic interrupt once at the start, where no events
+      seem to be set that could trigger the interrupt.
+      I am not sure why, for now the best we can do seems to be to simply ignore
+      it ...
     */
     return;
   }
-
-  /* Attempt to track spurious interrupt. */
-  if (!(events & ~(((uint32_t)I2C_SR2_BUSY << 16)|((uint32_t)I2C_SR2_MSL << 16))))
-    return;
 
   /* If we get here, we received an unexpected interrupt. */
   serial_puts(USART2, "\r\n\r\nERROR: unexpected interrupt during async receive\r\n");
@@ -449,8 +437,11 @@ async_read_mpu6050_reg_multi(uint8_t reg, uint8_t *buf, uint32_t len)
   i2c_async_buf = buf;
   i2c_async_len = len;
   i2c_async_stage = 1;
-  I2C_ITConfig(I2C1, I2C_IT_EVT|I2C_IT_ERR, ENABLE);
   I2C_GenerateSTART(I2C1, ENABLE);
+  while (!(I2C_GetLastEvent(I2C1) & I2C_SR1_SB))
+    ;
+  I2C_Send7bitAddress(I2C1, MPU6050_I2C_ADDR << 1, I2C_Direction_Transmitter);
+  I2C_ITConfig(I2C1, I2C_IT_EVT|I2C_IT_ERR, ENABLE);
 }
 
 
