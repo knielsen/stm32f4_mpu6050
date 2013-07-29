@@ -15,12 +15,17 @@
 
 #include "mpu6050.h"
 
+
 /*
   The 7-bit address of the I2C slave.
   For the MPU6050, this is 0x68 if the AD0 pin is held low, and 0x69 if the
   AD0 pin is held high.
 */
 #define MPU6050_I2C_ADDR 0x68
+
+
+/* This is apparently needed for libc/libm (eg. powf()). */
+int __errno;
 
 
 static void delay(__IO uint32_t nCount)
@@ -213,11 +218,38 @@ println_float(USART_TypeDef* usart, float f,
 }
 
 
+/* Event interrupt handler for I2C1. */
+
+static void (*i2c_async_event_handler)(void);
+
+void
+I2C1_EV_IRQHandler(void)
+{
+  void (*handler)(void) = i2c_async_event_handler;
+  if (handler)
+  {
+    (*handler)();
+    return;
+  }
+  serial_putchar(USART2, '!');
+  delay(1000000);
+}
+
+
+void
+I2C1_ER_IRQHandler(void)
+{
+  serial_putchar(USART2, 'E');
+  delay(1000000);
+}
+
+
 static void
 setup_i2c_for_mpu6050()
 {
   GPIO_InitTypeDef GPIO_InitStruct;
   I2C_InitTypeDef I2C_InitStruct;
+  NVIC_InitTypeDef NVIC_InitStructure;
 
   /* Use I2C1, with SCL on PB8 and SDA on PB7. */
   RCC_APB1PeriphClockCmd(RCC_APB1Periph_I2C1, ENABLE);
@@ -240,6 +272,21 @@ setup_i2c_for_mpu6050()
   I2C_InitStruct.I2C_Ack = I2C_Ack_Disable;
   I2C_InitStruct.I2C_AcknowledgedAddress = I2C_AcknowledgedAddress_7bit;
   I2C_Init(I2C1, &I2C_InitStruct);
+
+  I2C_ITConfig(I2C1, I2C_IT_BUF|I2C_IT_EVT|I2C_IT_ERR, DISABLE);
+
+  /* Configure the I2C interrupts. */
+  NVIC_PriorityGroupConfig(NVIC_PriorityGroup_4);
+  NVIC_InitStructure.NVIC_IRQChannel = I2C1_EV_IRQn;
+  NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 10;
+  NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0;
+  NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
+  NVIC_Init(&NVIC_InitStructure);
+  NVIC_InitStructure.NVIC_IRQChannel = I2C1_ER_IRQn;
+  NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 10;
+  NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0;
+  NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
+  NVIC_Init(&NVIC_InitStructure);
 
   I2C_Cmd(I2C1, ENABLE);
 }
@@ -285,6 +332,125 @@ read_mpu6050_reg_multi(uint8_t reg, uint8_t *buf, uint32_t len)
   }
 
   I2C_GenerateSTOP(I2C1, ENABLE);
+}
+
+
+static volatile uint32_t i2c_async_stage;
+static uint8_t i2c_async_reg;
+static uint8_t *i2c_async_buf;
+static uint32_t i2c_async_len;
+
+/*
+  Handle event for async (interrupt-driven) I2C read.
+  Note that this is called in interrupt context.
+*/
+static void
+async_read_event_handler(void)
+{
+  uint32_t events = I2C_GetLastEvent(I2C1);
+  uint32_t stage = i2c_async_stage;
+
+  if ((events & I2C_EVENT_MASTER_MODE_SELECT) == I2C_EVENT_MASTER_MODE_SELECT)
+  {
+    /*
+      The interrupt is cleared by reading CR1 and writing address to DR.
+      The GetLastEvent() above read CR1, and the Send7bitAddress() writes the DR.
+    */
+    if (stage == 1)
+      I2C_Send7bitAddress(I2C1, MPU6050_I2C_ADDR << 1, I2C_Direction_Transmitter);
+    else
+    {
+      I2C_Send7bitAddress(I2C1, MPU6050_I2C_ADDR << 1, I2C_Direction_Receiver);
+      if (i2c_async_len > 1)
+        I2C_AcknowledgeConfig(I2C1, ENABLE);
+      else
+        I2C_AcknowledgeConfig(I2C1, DISABLE);
+    }
+
+    return;
+  }
+
+  if (events & I2C_SR1_ADDR)
+  {
+    /*
+      The interrupt is cleared by a read of CR1 followed by a read of CR2
+      inside GetLastEvent().
+    */
+    if (stage == 1)
+      I2C_SendData(I2C1, i2c_async_reg);
+    else
+    {
+      I2C_ITConfig(I2C1, I2C_IT_BUF, ENABLE);
+    }
+    return;
+  }
+
+  if (stage == 1 && (events & I2C_SR1_BTF))
+  {
+    i2c_async_stage = 2;
+    /*
+      Clear old transmit status, to avoid spurious interrupts until the start
+      condition has been generated.
+    */
+    // ToDo doesn't seem to work ... :-( I2C1->SR1 &= ~(I2C_SR1_BTF | I2C_SR1_TXE);
+    I2C_GenerateSTART(I2C1, ENABLE);
+    return;
+  }
+
+  if (stage == 2 && (events & I2C_SR1_RXNE))
+  {
+    *i2c_async_buf++ = I2C_ReceiveData(I2C1);
+    --i2c_async_len;
+    if (i2c_async_len == 1)
+      I2C_AcknowledgeConfig(I2C1, DISABLE);
+    if (i2c_async_len == 0)
+    {
+      I2C_ITConfig(I2C1, I2C_IT_BUF|I2C_IT_EVT|I2C_IT_ERR, DISABLE);
+      I2C_GenerateSTOP(I2C1, ENABLE);
+      i2c_async_stage = 3;
+    }
+    return;
+  }
+
+  if (stage == 2 && (events & I2C_SR1_TXE))
+  {
+    /*
+      After transmitting the register ID, we are still in transmit mode, with
+      BTF asserted until the start condition occurs.
+      Unfortunately, this means that we will get spurious BTF/TxE interrupts
+      until the stop condition occurs. Furtunately, this seems to happen
+      almost immediately (no reason it shouldn't).
+    */
+    return;
+  }
+
+  /* Attempt to track spurious interrupt. */
+  if (!(events & ~(((uint32_t)I2C_SR2_BUSY << 16)|((uint32_t)I2C_SR2_MSL << 16))))
+    return;
+
+  /* If we get here, we received an unexpected interrupt. */
+  serial_puts(USART2, "\r\n\r\nERROR: unexpected interrupt during async receive\r\n");
+  serial_puts(USART2, "stage=");
+  serial_output_hexbyte(USART2, (uint8_t)stage);
+  serial_puts(USART2, "\r\nevents=0x");
+  serial_output_hexbyte(USART2, (uint8_t)((events >> 16)&0xff));
+  serial_output_hexbyte(USART2, (uint8_t)((events >> 8)&0xff));
+  serial_output_hexbyte(USART2, (uint8_t)(events&0xff));
+  serial_puts(USART2, "\r\n");
+  for (;;) { }
+}
+
+
+static void
+async_read_mpu6050_reg_multi(uint8_t reg, uint8_t *buf, uint32_t len)
+{
+  i2c_async_event_handler = async_read_event_handler;
+  i2c_async_reg = reg;
+  i2c_async_buf = buf;
+  i2c_async_len = len;
+  i2c_async_stage = 1;
+  I2C_ITConfig(I2C1, I2C_IT_EVT|I2C_IT_ERR, ENABLE);
+  I2C_GenerateSTART(I2C1, ENABLE);
 }
 
 
@@ -387,6 +553,7 @@ int main(void)
 
   delay(2000000);
   setup_serial();
+  serial_puts(USART2, "Initialising...\r\n");
   setup_i2c_for_mpu6050();
   delay(2000000);
   setup_mpu6050();
@@ -406,7 +573,10 @@ int main(void)
     uint8_t buf[14];
 
     serial_puts(USART2, "\r\nRead sensors ...\r\n");
-    read_mpu6050_reg_multi(MPU6050_REG_ACCEL_XOUT_H, buf, 14);
+    //read_mpu6050_reg_multi(MPU6050_REG_ACCEL_XOUT_H, buf, 14);
+    async_read_mpu6050_reg_multi(MPU6050_REG_ACCEL_XOUT_H, buf, 14);
+    while (i2c_async_stage != 3)
+      ;
 
     val = mpu6050_regs_to_signed(buf[6], buf[7]);
     serial_puts(USART2, "  Temp=");
@@ -426,15 +596,15 @@ int main(void)
 
     val = mpu6050_regs_to_signed(buf[8], buf[9]);
     serial_puts(USART2, "  Gyro_x=");
-    println_float(USART2, (float)val/(float)2048, 2, 3);
+    println_float(USART2, (float)val/(float)(32768.0f/2000.0f), 4, 2);
 
     val = mpu6050_regs_to_signed(buf[10], buf[11]);
     serial_puts(USART2, "  Gyro_y=");
-    println_float(USART2, (float)val/(float)2048, 2, 3);
+    println_float(USART2, (float)val/(float)(32768.0f/2000.0f), 4, 2);
 
     val = mpu6050_regs_to_signed(buf[12], buf[13]);
     serial_puts(USART2, "  Gyro_z=");
-    println_float(USART2, (float)val/(float)2048, 2, 3);
+    println_float(USART2, (float)val/(float)(32768.0f/2000.0f), 4, 2);
 
     delay(10000000);
   }

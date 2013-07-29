@@ -35,6 +35,7 @@ SRCS  += stm32f4xx_rcc.c
 SRCS  += stm32f4xx_gpio.c
 SRCS  += stm32f4xx_usart.c
 SRCS  += stm32f4xx_i2c.c
+SRCS  += misc.c
 
 # Startup file written by ST
 # The assembly code in this file is the first one to be
