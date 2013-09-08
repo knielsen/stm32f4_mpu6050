@@ -40,23 +40,23 @@ static void setup_serial(void)
   GPIO_InitTypeDef GPIO_InitStructure;
   USART_InitTypeDef USART_InitStructure;
 
-  /* enable peripheral clock for USART2 */
-  RCC_APB1PeriphClockCmd(RCC_APB1Periph_USART2, ENABLE);
+  /* enable peripheral clock for USART3 */
+  RCC_APB1PeriphClockCmd(RCC_APB1Periph_USART3, ENABLE);
 
-  /* GPIOA clock enable */
-  RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOA, ENABLE);
+  /* GPIOD clock enable */
+  RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOD, ENABLE);
 
-  /* GPIOA Configuration:  USART2 TX on PA2 */
-  GPIO_InitStructure.GPIO_Pin = GPIO_Pin_2;
+  /* GPIOD Configuration:  USART3 TX on PD8 */
+  GPIO_InitStructure.GPIO_Pin = GPIO_Pin_8;
   GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF;
   GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
   GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
   GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_UP ;
-  GPIO_Init(GPIOA, &GPIO_InitStructure);
+  GPIO_Init(GPIOD, &GPIO_InitStructure);
 
-  /* Connect USART2 pins to AF2 */
-  // TX = PA2
-  GPIO_PinAFConfig(GPIOA, GPIO_PinSource2, GPIO_AF_USART2);
+  /* Connect USART3 pins to AF */
+  // TX = PD8
+  GPIO_PinAFConfig(GPIOD, GPIO_PinSource8, GPIO_AF_USART3);
 
   USART_InitStructure.USART_BaudRate = 115200;
   USART_InitStructure.USART_WordLength = USART_WordLength_8b;
@@ -64,9 +64,9 @@ static void setup_serial(void)
   USART_InitStructure.USART_Parity = USART_Parity_No;
   USART_InitStructure.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
   USART_InitStructure.USART_Mode = USART_Mode_Tx;
-  USART_Init(USART2, &USART_InitStructure);
+  USART_Init(USART3, &USART_InitStructure);
 
-  USART_Cmd(USART2, ENABLE); // enable USART2
+  USART_Cmd(USART3, ENABLE); // enable USART3
 }
 
 
@@ -231,7 +231,7 @@ I2C1_EV_IRQHandler(void)
     (*handler)();
     return;
   }
-  serial_putchar(USART2, '!');
+  serial_putchar(USART3, '!');
   delay(1000000);
 }
 
@@ -239,7 +239,7 @@ I2C1_EV_IRQHandler(void)
 void
 I2C1_ER_IRQHandler(void)
 {
-  serial_putchar(USART2, 'E');
+  serial_putchar(USART3, 'E');
   delay(1000000);
 }
 
@@ -417,14 +417,14 @@ async_read_event_handler(void)
   }
 
   /* If we get here, we received an unexpected interrupt. */
-  serial_puts(USART2, "\r\n\r\nERROR: unexpected interrupt during async receive\r\n");
-  serial_puts(USART2, "stage=");
-  serial_output_hexbyte(USART2, (uint8_t)stage);
-  serial_puts(USART2, "\r\nevents=0x");
-  serial_output_hexbyte(USART2, (uint8_t)((events >> 16)&0xff));
-  serial_output_hexbyte(USART2, (uint8_t)((events >> 8)&0xff));
-  serial_output_hexbyte(USART2, (uint8_t)(events&0xff));
-  serial_puts(USART2, "\r\n");
+  serial_puts(USART3, "\r\n\r\nERROR: unexpected interrupt during async receive\r\n");
+  serial_puts(USART3, "stage=");
+  serial_output_hexbyte(USART3, (uint8_t)stage);
+  serial_puts(USART3, "\r\nevents=0x");
+  serial_output_hexbyte(USART3, (uint8_t)((events >> 16)&0xff));
+  serial_output_hexbyte(USART3, (uint8_t)((events >> 8)&0xff));
+  serial_output_hexbyte(USART3, (uint8_t)(events&0xff));
+  serial_puts(USART3, "\r\n");
   for (;;) { }
 }
 
@@ -544,58 +544,58 @@ int main(void)
 
   delay(2000000);
   setup_serial();
-  serial_puts(USART2, "Initialising...\r\n");
+  serial_puts(USART3, "Initialising...\r\n");
   setup_i2c_for_mpu6050();
   delay(2000000);
   setup_mpu6050();
 
-  serial_puts(USART2, "Hello world, ready to blink!\r\n");
+  serial_puts(USART3, "Hello world, ready to blink!\r\n");
 
   res = read_mpu6050_reg(MPU6050_REG_WHOAMI);
-  serial_puts(USART2, "\r\nMPU6050: whoami=0x");
-  serial_output_hexbyte(USART2, res);
+  serial_puts(USART3, "\r\nMPU6050: whoami=0x");
+  serial_output_hexbyte(USART3, res);
   res = read_mpu6050_reg(MPU6050_REG_PWR_MGMT_1);
-  serial_puts(USART2, "\r\nMPU6050: pwr_mgmt_1=0x");
-  serial_output_hexbyte(USART2, res);
+  serial_puts(USART3, "\r\nMPU6050: pwr_mgmt_1=0x");
+  serial_output_hexbyte(USART3, res);
 
   while (1)
   {
     int16_t val;
     uint8_t buf[14];
 
-    serial_puts(USART2, "\r\nRead sensors ...\r\n");
+    serial_puts(USART3, "\r\nRead sensors ...\r\n");
     //read_mpu6050_reg_multi(MPU6050_REG_ACCEL_XOUT_H, buf, 14);
     async_read_mpu6050_reg_multi(MPU6050_REG_ACCEL_XOUT_H, buf, 14);
     while (i2c_async_stage != 3)
       ;
 
     val = mpu6050_regs_to_signed(buf[6], buf[7]);
-    serial_puts(USART2, "  Temp=");
-    println_float(USART2, (float)val/340.0f+36.53f, 2, 3);
+    serial_puts(USART3, "  Temp=");
+    println_float(USART3, (float)val/340.0f+36.53f, 2, 3);
 
     val = mpu6050_regs_to_signed(buf[0], buf[1]);
-    serial_puts(USART2, "  Accel_x=");
-    println_float(USART2, (float)val/(float)2048, 2, 3);
+    serial_puts(USART3, "  Accel_x=");
+    println_float(USART3, (float)val/(float)2048, 2, 3);
 
     val = mpu6050_regs_to_signed(buf[2], buf[3]);
-    serial_puts(USART2, "  Accel_y=");
-    println_float(USART2, (float)val/(float)2048, 2, 3);
+    serial_puts(USART3, "  Accel_y=");
+    println_float(USART3, (float)val/(float)2048, 2, 3);
 
     val = mpu6050_regs_to_signed(buf[4], buf[5]);
-    serial_puts(USART2, "  Accel_z=");
-    println_float(USART2, (float)val/(float)2048, 2, 3);
+    serial_puts(USART3, "  Accel_z=");
+    println_float(USART3, (float)val/(float)2048, 2, 3);
 
     val = mpu6050_regs_to_signed(buf[8], buf[9]);
-    serial_puts(USART2, "  Gyro_x=");
-    println_float(USART2, (float)val/(float)(32768.0f/2000.0f), 4, 2);
+    serial_puts(USART3, "  Gyro_x=");
+    println_float(USART3, (float)val/(float)(32768.0f/2000.0f), 4, 2);
 
     val = mpu6050_regs_to_signed(buf[10], buf[11]);
-    serial_puts(USART2, "  Gyro_y=");
-    println_float(USART2, (float)val/(float)(32768.0f/2000.0f), 4, 2);
+    serial_puts(USART3, "  Gyro_y=");
+    println_float(USART3, (float)val/(float)(32768.0f/2000.0f), 4, 2);
 
     val = mpu6050_regs_to_signed(buf[12], buf[13]);
-    serial_puts(USART2, "  Gyro_z=");
-    println_float(USART2, (float)val/(float)(32768.0f/2000.0f), 4, 2);
+    serial_puts(USART3, "  Gyro_z=");
+    println_float(USART3, (float)val/(float)(32768.0f/2000.0f), 4, 2);
 
     delay(10000000);
   }
