@@ -10,6 +10,7 @@
  */
 
 #include <math.h>
+#include <string.h>
 
 #include <stm32f4_discovery.h>
 
@@ -244,17 +245,44 @@ I2C1_ER_IRQHandler(void)
 }
 
 
+static void (*dma_event_handler)(void);
+
+void
+DMA1_Stream0_IRQHandler(void)
+{
+  void (*handler)(void) = dma_event_handler;
+  if (handler)
+  {
+    (*handler)();
+    return;
+  }
+  serial_putchar(USART3, '|');
+  delay(1000000);
+}
+
+
+static uint8_t mpu6050_reg_buffer[14];
+
 static void
 setup_i2c_for_mpu6050()
 {
   GPIO_InitTypeDef GPIO_InitStruct;
   I2C_InitTypeDef I2C_InitStruct;
   NVIC_InitTypeDef NVIC_InitStructure;
+  DMA_InitTypeDef DMA_InitStructure;
 
   /* Use I2C1, with SCL on PB8 and SDA on PB7. */
   RCC_APB1PeriphClockCmd(RCC_APB1Periph_I2C1, ENABLE);
   RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOB, ENABLE);
 
+  /* Reset the I2C unit. */
+  RCC_APB1PeriphResetCmd(RCC_APB1Periph_I2C1, ENABLE);
+  RCC_APB1PeriphResetCmd(RCC_APB1Periph_I2C1, DISABLE);
+
+  /* Enable DMA clock for I2C. */
+  RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_DMA1, ENABLE);
+
+  /* Setup the I/O pins. */
   GPIO_InitStruct.GPIO_Pin = GPIO_Pin_8 | GPIO_Pin_7;
   GPIO_InitStruct.GPIO_Mode = GPIO_Mode_AF;
   GPIO_InitStruct.GPIO_Speed = GPIO_Speed_50MHz;
@@ -264,6 +292,35 @@ setup_i2c_for_mpu6050()
 
   GPIO_PinAFConfig(GPIOB, GPIO_PinSource8, GPIO_AF_I2C1);
   GPIO_PinAFConfig(GPIOB, GPIO_PinSource7, GPIO_AF_I2C1);
+
+  /* Initialise DMA. */
+  DMA_ClearFlag(DMA1_Stream0,
+                DMA_FLAG_TCIF0 | DMA_FLAG_FEIF0 |
+                DMA_FLAG_DMEIF0 | DMA_FLAG_TEIF0 |
+                DMA_FLAG_HTIF0);
+
+  DMA_Cmd(DMA1_Stream0, DISABLE);
+  DMA_DeInit(DMA1_Stream0);
+
+  DMA_InitStructure.DMA_Channel = DMA_Channel_1;
+  /* Address of data register. */
+  DMA_InitStructure.DMA_PeripheralBaseAddr = I2C1_BASE + I2C_Register_DR;
+  DMA_InitStructure.DMA_PeripheralInc = DMA_PeripheralInc_Disable;
+  DMA_InitStructure.DMA_MemoryInc = DMA_MemoryInc_Enable;
+  DMA_InitStructure.DMA_PeripheralDataSize = DMA_PeripheralDataSize_Byte;
+  DMA_InitStructure.DMA_MemoryDataSize = DMA_MemoryDataSize_Byte;
+  DMA_InitStructure.DMA_Mode = DMA_Mode_Normal;
+  DMA_InitStructure.DMA_Priority = DMA_Priority_Medium;
+  DMA_InitStructure.DMA_FIFOMode = DMA_FIFOMode_Enable;
+  DMA_InitStructure.DMA_FIFOThreshold = DMA_FIFOThreshold_Full;
+  DMA_InitStructure.DMA_MemoryBurst = DMA_MemoryBurst_Single;
+  DMA_InitStructure.DMA_PeripheralBurst = DMA_PeripheralBurst_Single;
+
+  DMA_InitStructure.DMA_DIR = DMA_DIR_PeripheralToMemory;
+  DMA_InitStructure.DMA_Memory0BaseAddr = (uint32_t)mpu6050_reg_buffer;
+  DMA_InitStructure.DMA_BufferSize = 14;
+  DMA_DeInit(DMA1_Stream0);
+  DMA_Init(DMA1_Stream0, &DMA_InitStructure);
 
   I2C_InitStruct.I2C_ClockSpeed = 400000;
   I2C_InitStruct.I2C_Mode = I2C_Mode_I2C;
@@ -287,6 +344,14 @@ setup_i2c_for_mpu6050()
   NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0;
   NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
   NVIC_Init(&NVIC_InitStructure);
+
+  DMA_ITConfig(DMA1_Stream0, DMA_IT_TC, DISABLE);
+  NVIC_InitStructure.NVIC_IRQChannel = DMA1_Stream0_IRQn;
+  NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 10;
+  NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0;
+  NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
+  NVIC_Init(&NVIC_InitStructure);
+  DMA_ITConfig(DMA1_Stream0, DMA_IT_TC, ENABLE);
 
   I2C_Cmd(I2C1, ENABLE);
 }
@@ -360,7 +425,8 @@ async_read_event_handler(void)
       I2C_SendData(I2C1, i2c_async_reg);
     else
     {
-      I2C_ITConfig(I2C1, I2C_IT_BUF, ENABLE);
+      /* When using DMA, no interrupt for RxNE and BTF. */
+      I2C_ITConfig(I2C1, I2C_IT_BUF|I2C_IT_EVT, DISABLE);
     }
     return;
   }
@@ -383,24 +449,14 @@ async_read_event_handler(void)
       ;
     I2C_Send7bitAddress(I2C1, MPU6050_I2C_ADDR << 1, I2C_Direction_Receiver);
     if (i2c_async_len > 1)
+    {
       I2C_AcknowledgeConfig(I2C1, ENABLE);
+      I2C_DMALastTransferCmd(I2C1, ENABLE);
+    }
     else
       I2C_AcknowledgeConfig(I2C1, DISABLE);
-    return;
-  }
-
-  if (stage == 2 && (events & I2C_SR1_RXNE))
-  {
-    *i2c_async_buf++ = I2C_ReceiveData(I2C1);
-    --i2c_async_len;
-    if (i2c_async_len == 1)
-      I2C_AcknowledgeConfig(I2C1, DISABLE);
-    if (i2c_async_len == 0)
-    {
-      I2C_ITConfig(I2C1, I2C_IT_BUF|I2C_IT_EVT|I2C_IT_ERR, DISABLE);
-      I2C_GenerateSTOP(I2C1, ENABLE);
-      i2c_async_stage = 3;
-    }
+    I2C_DMACmd(I2C1, ENABLE);
+    DMA_Cmd(DMA1_Stream0, ENABLE);
     return;
   }
 
@@ -430,8 +486,44 @@ async_read_event_handler(void)
 
 
 static void
+dma_done_handler(void)
+{
+  if (DMA_GetITStatus(DMA1_Stream0, DMA_IT_TCIF0))
+  {
+    DMA_ClearITPendingBit(DMA1_Stream0, DMA_IT_TCIF0);
+
+    I2C_ITConfig(I2C1, I2C_IT_BUF|I2C_IT_EVT|I2C_IT_ERR, DISABLE);
+    I2C_DMACmd(I2C1, DISABLE);
+    DMA_Cmd(DMA1_Stream0, DISABLE);
+    I2C_GenerateSTOP(I2C1, ENABLE);
+    memcpy(i2c_async_buf, mpu6050_reg_buffer, i2c_async_len);
+    i2c_async_stage = 3;
+    return;
+  }
+
+  /* If we get here, we received an unexpected interrupt. */
+  serial_puts(USART3, "\r\n\r\nERROR: unexpected DMA interrupt\r\n");
+  serial_puts(USART3, "stage=");
+  serial_output_hexbyte(USART3, (uint8_t)i2c_async_stage);
+  serial_puts(USART3, " TC=");
+  serial_output_hexbyte(USART3, (uint8_t)DMA_GetITStatus(DMA1_Stream0, DMA_IT_TCIF0));
+  serial_puts(USART3, " HT=");
+  serial_output_hexbyte(USART3, (uint8_t)DMA_GetITStatus(DMA1_Stream0, DMA_IT_HTIF0));
+  serial_puts(USART3, " TE=");
+  serial_output_hexbyte(USART3, (uint8_t)DMA_GetITStatus(DMA1_Stream0, DMA_IT_TEIF0));
+  serial_puts(USART3, " DME=");
+  serial_output_hexbyte(USART3, (uint8_t)DMA_GetITStatus(DMA1_Stream0, DMA_IT_DMEIF0));
+  serial_puts(USART3, " FE=");
+  serial_output_hexbyte(USART3, (uint8_t)DMA_GetITStatus(DMA1_Stream0, DMA_IT_FEIF0));
+  serial_puts(USART3, "\r\n");
+  for (;;) { }
+}
+
+
+static void
 async_read_mpu6050_reg_multi(uint8_t reg, uint8_t *buf, uint32_t len)
 {
+  dma_event_handler = dma_done_handler;
   i2c_async_event_handler = async_read_event_handler;
   i2c_async_reg = reg;
   i2c_async_buf = buf;

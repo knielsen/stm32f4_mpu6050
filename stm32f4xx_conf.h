@@ -38,7 +38,7 @@
 // #include "stm32f4xx_dac.h"
 // #include "stm32f4xx_dbgmcu.h"
 // #include "stm32f4xx_dcmi.h"
-// #include "stm32f4xx_dma.h"
+#include "stm32f4xx_dma.h"
 // #include "stm32f4xx_exti.h"
 // #include "stm32f4xx_flash.h"
 // #include "stm32f4xx_fsmc.h"
